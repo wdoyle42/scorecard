@@ -1,54 +1,35 @@
 ---
-title:"Mapping Earnings Data from College Scorecard"
-output:html_document
+title: Mapping Earnings Data from College Scorecard
+output:
+  html_document
+  output_dir: ../output
 ---
 
+<!--
 
+PROJ: Analyzing new college score card data
+AUTH: Will Doyle and Benjamin Skinner
+INIT: 12 September 2015
 
-```{r,echo=FALSE,warning=FALSE,message=FALSE,warning=FALSE,comment=FALSE,fig.width=10}
+-->
 
-
+```{r,echo=F,warning=F,message=F,comment=F}
 ################################################################################
-## Analyzing new college score card data
-## 9/12/2015
+## SET YEAR, SCORECARD, AND INSTITUTION VARIABLE OPTIONS
 ################################################################################
 
-options(stringsAsFactors = FALSE)
-rm(list=ls())
-library(tidyr)
-library(dplyr)
-library(RColorBrewer)
-library(rgeos)
-library(rgdal)
-library(maptools)
-library(leaflet)
-library(htmlwidgets)
-library(knitr)
-opts_knit$set(root.dir="../output/")
-## This file expects to be in a directory with structure
-## ./data
-## ./scripts
-## ./output
+## Set the year for your map. You must have all relevelant files for
+## the program to run
 
-#State and county leaflet map plots of earnings
+## year option
+year <- 2011
 
-year<-2011
+## outcome columns in addition to required
+outcome <- c('md_earn_wne_p10')
+var_describe <- 'Median earnings of attendeees 10 yrs after entry'
 
-shapefile<-"tl_2011_us_county"
-
-#put your tiger directory here
-#From: ftp://ftp2.census.gov/geo/tiger/TIGER2011/COUNTY/
-tiger_dir<-"/Users/doylewr/TIGER2011/COUNTY/"
-
-##Todo: download and unzip into data directory
-
-cs<-read.csv(paste0("../data/MERGED",year,"_PP.csv"),na.strings="NULL")
-
-#All lower case names
-names(cs)<-tolower(names(cs))
-
-#IPEDS-based dataset b/c I'm lazy
-inst_all<-read.csv("../data/insts.csv")
+required <- c('unitid','instnm')
+sccols <- c(required, outcome)
 
 ## REPORT CATEGORIES -----------------------------------------------------------
 ##
@@ -61,212 +42,413 @@ inst_all<-read.csv("../data/insts.csv")
 ## 
 ## -----------------------------------------------------------------------------
 
-county_map_cs<-function(myvar,var_describe,legend_title,select_group){
+## select category
+instcat <- 5
 
-## This function expects that you have college scorecard data
-  ## Also expects insts data file stored in ../data
-  ## And Census county tiger shapefile stored in your tiger directory
-  
-select_cols<-c("unitid", #unitid, always
-               "instnm",  #name, to be sure
-                myvar # selected variable
-               )
+```
 
-cs_sub<-select(cs,one_of(select_cols))
 
-cs_sub$myvar<-unlist(cs_sub[myvar])
+```{r,echo=F,warning=F,message=F,comment=F}
+################################################################################
+## HEADER INFORMATION
+################################################################################
 
-cs_sub$myvar<-as.numeric(cs_sub$myvar)
+## read in strings as strings, not factors
+options(stringsAsFactors = FALSE)
 
-#If expressed as a proportion change to percent
-if(max(cs_sub$myvar,na.rm=TRUE)<=1){
-cs_sub$myvar<-cs_sub$myvar*100
+##  package list
+libs <- c('dplyr',                      # make data wrangling easier
+          'gstat',                      # kriging
+          'htmlwidgets',                # way to bind javascript libraries
+          'knitr',                      # combine R code and markdown
+          'leaflet',                    # interactive mapping module
+          'maptools',                   # mapping projections
+          'RColorBrewer',               # create color palettes
+          'readr',                      # faster reading of large csv files
+          'rgdal',                      # interact with gdal GIS framework
+          'rgeos',                      # interact with geos GIS framework
+          'tidyr')                      # make data wrangling easier
+
+## load packages
+lapply(libs, require, character.only = T)
+
+## set relative directory paths
+ddir <- '../data/'
+mdir <- '../map/'
+
+## projection (do not change unless there's a specific reason)
+proj <- CRS('+init=epsg:4269')
+
+```
+
+
+```{r,echo=F,warning=F,message=F,comment=F}
+################################################################################
+## LOAD DATA
+################################################################################
+
+## load county shapefile (national level)
+shapefile <- paste0('tl_', year, '_us_county')
+
+## read in college scorecard data
+csdat <- read_csv(paste0(ddir, 'MERGED', year, '_PP.csv'))
+
+## set mask based on columns set above
+keep <- sapply(sccols, FUN = function(x) { grep(x, tolower(names(csdat))) })
+
+## subset
+csdat <- csdat %>% select(keep)
+
+## read in IPEDS institution GEO files
+inst_all <- read_csv(paste0(ddir, 'insts.csv'))
+
+```
+
+```{r,echo=F,warning=F,message=F,comment=F}
+################################################################################
+## FUNCTIONS
+################################################################################
+
+instPointsSpatial <- function(dat,                  # merged score data
+                              outcome_var,          # outcome variable
+                              proj,                 # projection to use
+                              save.file = TRUE      # option to save result
+                              ) {
+
+    ## pop longitude and latitude from data frame
+    dat <- dat %>% filter(!is.na(outcome_var))
+    inst_points <- data.frame(dat %>% select(longitud,latitude))
+    dat <- data.frame(dat %>% select(-latitude, -longitud))
+    
+    ## creates a spatial points data frame using long and lat from IPEDS
+    inst_sp <- SpatialPointsDataFrame(coords = inst_points,
+                                      data = dat, 
+                                      proj4string = proj)
+
+    ## save spatial data frame
+    ## filename <- paste0(mdir, 'institutional_points.Rda')
+    filename <- paste0(mdir, 'institutional_points.geojson')
+    if(save.file) {
+        ## save(inst_sp, file = filename)
+        geojson_write(inst_sp, file = filename)
+    }
+    
+    ## return
+    return(inst_sp)
 }
 
-inst_all<-filter(inst_all,group%in%select_group)
+krigeMap <- function(ddir,                          # data directory
+                     dat,                           # merged scorecard data
+                     inst_sp,                       # institution spatial
+                     outcome_var,                   # variable to krige
+                     sf,                            # shapefile 
+                     proj = CRS('+init=epsg:4269'), # projection to use
+                     save.file = TRUE               # option to save result
+                     ) {
 
-cs_sub<-left_join(inst_all,cs_sub,by="unitid")
+    ## ////////////////////////////////////////////////////////////////////
+    ## This function will krige the outcome data and return a spatial
+    ## object with the proper data. It takes a long time to run so it
+    ## defaults to save the output, which can then be called the next time.
+    ## The save may be overwritten by switching save.file to FALSE.
+    ## ////////////////////////////////////////////////////////////////////
+    
+    ## =================================
+    ## SET UP DATA
+    ## =================================
 
-#Just continental US for now
+    ## drop missing observations
+    dat <- dat %>% filter(!is.na(outcome_var))
+    
+    ## get appropriate tiger shapefile
+    county_shape <- readOGR(dsn = ddir,
+                            layer = sf,
+                            verbose = FALSE)
 
-exclude.list<-c("AK","AS","DC","FM","GU","HI","MP","PR")
+    ## simplify shapefile to reduce size
+    county_shape_simple <- gSimplify(county_shape,
+                                     tol = .001,
+                                     topologyPreserve = TRUE)
 
-cs_sub<-filter(cs_sub,!(cs_sub$stabbr%in%exclude.list))
+    ## create a spatial polygons dataframe
+    county_shape <- SpatialPolygonsDataFrame(county_shape_simple,
+                                             data = county_shape@data)
+    
+    ## correct Projection: epsg:4269
+    county_shape <- spTransform(county_shape, proj)
 
-##Create shapefile
+    ## lower names in attached spatial data
+    names(county_shape@data) <- tolower(names(county_shape@data))
 
-#Drop missing observations
-cs_sub<-filter(cs_sub,is.na(myvar)==FALSE)
+    ## reformat FIPS codes so they have leading zeros
+    dat$fips <- sprintf('%02s', dat$fips)
 
-#Get longitude and latitude
-inst_points<-data.frame(cs_sub$longitud,cs_sub$latitude)
+    ## subset to states in scorecard data
+    county_shape <- county_shape[county_shape$statefp %in% dat$fips,] 
 
-cs_sub<-select(cs_sub,-latitude,-longitud)
+    ## =================================
+    ## KRIGE OVER AREAS
+    ## =================================
 
-#This creates a spatial points data frame using long and lat from IPEDS
-#NAD83= epsg:4269 as projection
+    ## inverse distance weighted interpolation
+    idw.fit <- idw(outcome_var ~ 1,
+                   locations = inst_sp,
+                   newdata = county_shape,
+                   na.action = na.pass)
+    
+    ## pull predictions
+    idw.fit.preds <- data.frame(idw.fit$var1.pred)
+    
+    ## get ids and make them rownames
+    row.names(idw.fit.preds) <- as.character(county_shape$geoid)
+    row.names(county_shape) <- as.character(county_shape$geoid)
+    
+    ## column names
+    names(idw.fit.preds) <- 'outcome_var'
+        
+    ## merge back into data frame
+    county_shape <- spCbind(county_shape, idw.fit.preds)
 
-inst_sp <- SpatialPointsDataFrame(coords=inst_points,data=cs_sub, 
-                    proj4string=CRS("+init=epsg:4269"))
+    ## =================================
+    ## SAVE AND OUTPUT
+    ## =================================
 
-if(file.exists(paste0("../data/county_shape_",myvar,".Rda"))==FALSE){
+    ## map data file ./dir/name
+    ## mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.Rda' )
+    mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson' )
+    if(save.file) {
+        ## save(county_shape, file = mapname)
+        geojson_write(county_shape, file = mapname)
+    }
 
-# Get appropriate tiger shapefile
-
-county_shape<-readOGR(dsn=tiger_dir,
-                     layer=shapefile,
-                     verbose=FALSE)
-
-county_shape_simple<-gSimplify(county_shape,tol=.001,topologyPreserve = TRUE)
-
-county_shape<-SpatialPolygonsDataFrame(county_shape_simple,data=county_shape@data)
-
-#Correct Projection: NAD83==epsg:4269
-county_shape<-spTransform(county_shape,CRS("+init=epsg:4269"))
-
-names(county_shape@data)<-tolower(names(county_shape@data))
-
-cs_sub$fips<-sprintf("%02s",cs_sub$fips)
-
-county_shape<-county_shape[county_shape$statefp%in%cs_sub$fips,]
-
-#Krige over areas: push output back
-
-#Inverse distance weighted interpolation
-
-print("Kriging over counties  . . . .")
-
-idw.fit<-idw(myvar~1,
-             locations=inst_sp,
-             newdata=county_shape,
-             na.action=na.pass)
-
-#Pull predictions
-
-idw.fit.preds<-data.frame(idw.fit$var1.pred)
-
-#Get ids and make them rownames
-
-row.names(idw.fit.preds)<-as.character(county_shape$geoid)
-
-row.names(county_shape)<-as.character(county_shape$geoid)
-
- #Column names
-
-names(idw.fit.preds)<-"myvar"
-
-#Merge back into data frame
-
-county_shape<-spCbind(county_shape,idw.fit.preds)
-
-save(county_shape,file=paste0("../data/county_shape_",myvar,".Rda"))
-
-} else{ 
-  load(paste0("../data/county_shape_",myvar,".Rda")) 
+    ## return spatial data file
+    return(county_shape)
 }
-
-#####################################
-## Draw Map
-#####################################
-
-#Colors
-#Red=BAD
-
-my.colors<-brewer.pal(11,"RdYlGn")
-
-my.pal<-colorRampPalette(colors=c(my.colors[1],my.colors[6],my.colors[11]))(10)
-
-npal <- colorNumeric(pal=my.pal, domain=county_shape@data$myvar)
-
-county_popup <- paste0(county_shape@data$namelsad,
-                      var_describe, 
-                       prettyNum(county_shape@data$myvar,
-                                 big.mark=",",
-                                 scientific=FALSE,
-                                 digits=0)
-                    )
-
-inst_popup<-paste0(as.character(inst_sp@data$instnm.x),
-                   var_describe,
-                   prettyNum(inst_sp$myvar,
-                            big.mark=",",
-                            scientific=FALSE,
-                            digits=0)
-                   )
-
-#Set bounding box for plotting
-b<-as.vector(bbox(county_shape))
-
-#Expands limits slighlty
-b[1]<-b[1]*1.03
-b[2]<-b[2]-(b[2]*.03)
-b[3]<-b[3]-(b[3]*.03)
-b[4]<-b[4]*1.03
-
-#Create map
-county_map<-leaflet(county_shape) %>%
   
-  #Overlay counties    
-  addPolygons(stroke=TRUE,
-              opacity=.25,
-              fill=TRUE,
-              color=~npal(county_shape@data$myvar),
-              fillOpacity=.75,
-              popup=county_popup
-                )%>%
-  
-  #Legend
-  addLegend("bottomleft",
-            pal=npal,
-            title=legend_title,
-            values=~county_shape@data$myvar
-              )%>%
+mapSC <- function(countylayer,          # county map data
+                  instlayer,            # institution points layer
+                  outcome_var,          # scorecard outcome data
+                  var_describe          # description for map
+                  ) {
 
-#Overlay Instititions
-    addCircleMarkers(lng=inst_sp@coords[,1],
-                     lat=inst_sp@coords[,2],
-                     color="black",
-                     fillColor="black",
-                     fillOpacity=.25,
-                     stroke=FALSE,
-                     radius=5,
-                     group="Institutions",
-                     popup=inst_popup
-               )%>%  
-  
-#Layer Control
-    addLayersControl(
-        overlayGroups = c("Institutions"),
-        options = layersControlOptions(collapsed = FALSE)
-    )%>%
-  
-# Leave insts off at first  
-  hideGroup("Institutions")%>%
+    ## ////////////////////////////////////////////////////////////////////
+    ## This function produces a leaflet map from the spatial objects
+    ## ////////////////////////////////////////////////////////////////////
 
-# Add tiles        
-  addProviderTiles("Stamen.Toner",options=list(minZoom=4,zoom=4,maxZoom=13))%>%
+    ## =================================
+    ## SET COLORS
+    ## =================================
 
-  #Set boundaries
-  setMaxBounds(lng1=b[1],lat1=b[2],lng2=b[3],lat2=b[4]) 
+    ## read in diverging palette
+    my.colors <- brewer.pal(11,'RdYlGn')
+
+    ## create color ramp (red == bad ---> green == good)
+    my.pal <- colorRampPalette(colors = c(my.colors[1],
+                                          my.colors[6],
+                                          my.colors[11]))(10)
+    ## numeric palette
+    npal <- colorNumeric(pal = my.pal,
+                         domain = countylayer@data[[outcome_var]])
+
+
+    ## =================================
+    ## ADJUST LABELS
+    ## =================================
+
+    ## split long variable description into 2 if long
+    split <- as.integer(length(strsplit(var_describe, ' ')[[1]]) / 2)
+    if(split > 3) {
+         legend_title <- strsplit(var_describe, ' ')[[1]]
+         legend_title <- paste(paste(legend_title[1:split], collapse = ' '),
+                               '<br/>',
+                               paste(legend_title[split:length(legend_title)],
+                                     collapse = ' '), collapse = '')
+    } else {
+        legend_title <- var_describe
+    }
+
+    ## add break and colon to variable description for popup
+    var_describe <- paste0('<br/> ', var_describe, ': ')
+     
+    ## =================================
+    ## CREATE POPUPS
+    ## =================================
+       
+    county_popup <- paste0(countylayer@data$namelsad,
+                           var_describe, 
+                           prettyNum(countylayer@data[[outcome_var]],
+                                     big.mark = ',',
+                                     scientific = FALSE,
+                                     digits = 0)
+                           )
+    
+    inst_popup <- paste0(as.character(instlayer@data$instnm),
+                         var_describe,
+                         prettyNum(instlayer$[[outcome_var]],
+                                   big.mark = ',',
+                                   scientific = FALSE,
+                                   digits = 0)
+                         )
+    
+    ## set bounding box for plotting
+    b <- as.vector(bbox(countylayer))
+    
+    ## expands limits slighlty
+    b[1] <- b[1] * 1.03
+    b[2] <- b[2] - (b[2] * .03)
+    b[3] <- b[3] - (b[3] * .03)
+    b[4] <- b[4] * 1.03
    
-county_map
+    ## =================================
+    ## CREATE LEAFLET MAP
+    ## =================================
+    
+    county_map <- leaflet(countylayer) %>%
+        ## overlay counties    
+        addPolygons(stroke = TRUE,
+                    opacity = .25,
+                    fill = TRUE,
+                    color = ~npal(countylayer@data$outcome_var),
+                    fillOpacity = .75,
+                    popup = county_popup
+                    ) %>%
+        ## legend
+        addLegend('bottomleft',
+                  pal = npal,
+                  title = legend_title,
+                  values = ~countylayer@data$outcome_var
+                  ) %>%
+        ## overlay instititions
+        addCircleMarkers(lng = instlayer@coords[,1],
+                         lat = instlayer@coords[,2],
+                         color = 'black',
+                         fillColor = 'black',
+                         fillOpacity = .25,
+                         stroke = FALSE,
+                         radius = 5,
+                         group = 'Institutions',
+                         popup = inst_popup
+                         ) %>%  
+        ## layer control for institutions
+        addLayersControl(
+            overlayGroups = c('Institutions'),
+            options = layersControlOptions(collapsed = FALSE)
+        ) %>%
+        ## leave institutions off by default  
+        hideGroup('Institutions') %>%
+        ## add tiles        
+        addProviderTiles('Stamen.Toner',
+                         options = list(minZoom = 4,
+                                        zoom = 4,
+                                        maxZoom = 13)
+                         ) %>%
+        ## set boundaries
+        setMaxBounds(lng1 = b[1],
+                     lat1 = b[2],
+                     lng2 = b[3],
+                     lat2 = b[4]) 
+    ## =================================
+    ## RETURN MAP
+    ## =================================
+    
+    return(county_map)
 }
 
+countyMapCS <- function(csdat,               # scorecard data
+                        instdat,             # institutional data
+                        outcome_var,         # scorecard outcome variable
+                        select_group,        # institutional category
+                        proj,                # projection to use
+                        redraw_map = FALSE,  # ignore saved kriged map
+                        redraw_inst = FALSE, # ignore saved inst. spatial df
+                        ...                  # additional arguments
+                        ){
+
+    ## ////////////////////////////////////////////////////////////////////
+    ## This function is a wrapper for the kriging and mapping functions.
+    ## It expects that you have college scorecard data, 
+    ## institutional data, shapefile data in the ../data/ directory
+    ## ////////////////////////////////////////////////////////////////////
+
+    ## convert outcome column to numeric
+    dat <- csdat %>% mutate(outcome_var = as.numeric(.[[outcome_var]]))
+       
+    ## if outcome variable expressed as a proportion change to percent
+    if(max(dat$outcome_var, na.rm = TRUE) <= 1){
+        dat$outcome_var <- dat$outcome_var * 100
+    }
+
+    ## drop states list
+    dslist <-  c('AK','AS','DC','FM','GU','HI','MP','PR')
+
+    ## wrangle data
+    mapdat <- instdat %>%
+        filter(group %in% select_group,                # filter out non-group
+               !(stabbr %in% dslist)) %>%              # drop non-lower 48
+        select(unitid,
+               fips,
+               latitude,
+               longitud,
+               stabbr) %>% # subset
+        left_join(dat, by = 'unitid')                  # join to cs data
+
+    ## =================================
+    ## READ IN SHAPEFILES
+    ## =================================
+
+    ## institutions spatial data file ./dir/name
+    ## instname <-paste0(mdir, 'institutional_points.Rda')
+    instname <-paste0(mdir, 'institutional_points.geojson')
+ 
+    ## institutional data
+    if(file.exists(instname) & !(redraw_inst)){
+        ## load existing
+        message('\nReading in institutional points layer')
+        ## inst_sp <- get(load(instname))
+        inst_sp <- readOGR(instname, layer = 'OGRGeoJSON')
+    } else {
+        ## create institutional spatial dataframe
+        message('\nCreating spatial file for institutional points')
+        inst_sp <- instPointsSpatial(mapdat, outcome_var, proj)
+    }
+    
+    ## map data file ./dir/name
+    ## mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.Rda')
+    mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson')
+    
+    if(file.exists(mapname) & !(redraw_map)){
+        ## load existing
+        message('\nReading in county layer')
+        ## county_shape <- get(load(mapname))
+        county_shape <- readOGR(mapname, layer = 'OGRGeoJSON')
+    } else {
+        ## create map
+        message('\nKriging...will take a little bit...')
+        county_shape <- krigeMap(ddir,mapdat,inst_sp,outcome_var,shapefile,proj)
+    }
+
+    ## =================================
+    ## DRAW AND RETURN MAP
+    ## =================================
+
+    message('\nDrawing map')
+    out.map <- mapSC(county_shape, inst_sp, outcome_var, var_describe)
+    return(out.map)
+}
 ```
 
 County Level Estimates: Earnings of Public Two-Year Attendees Ten Years After Entry
 =========================================
-```{r,echo=FALSE,warning=FALSE,message=FALSE,comment=FALSE,fig.width=10}
-##Note that this will take LOONG time on first run
+```{r, echo=F,warning=F,comment=F,fig.width=10}
+################################################################################
+## MAKE MAP
+################################################################################
 
-myvar<-"md_earn_wne_p10"
+county_map_earn <- countyMapCS(csdat = csdat, instdat = inst_all,
+                               outcome_var = outcome, select_group = instcat,
+                               proj = proj, var_describe = var_describe)
 
-county_map_earn<-county_map_cs(myvar="md_earn_wne_p10",
-              var_describe="<br/> Median earnings of attendeees 10 yrs after entry: ",
-              legend_title="Median Earnings of attendees <br/> 10 yrs after entry",
-              select_group=5)
-
-county_map_earn
+print(county_map_earn)
 ```
 
 This map displays county level estimates of the earnings among working attendees of local public two-year colleges ten years after first attendance. The data only include attendees who took some form of federal financial aid (loans or grants).
@@ -275,7 +457,7 @@ The map is interactive: click on any county for county-level estimate. Zoom usin
 
 County-level estimates are based on the distance-weighted measures for nearby institutuons, with nearest institutions weighted highest.
 
-Variable name: `r myvar`, 
+Variable name: `r print(outcome_var)`, 
 
 Data from college scorecard dataset, 2011: [https://collegescorecard.ed.gov/data/](https://collegescorecard.ed.gov/data/)
 
