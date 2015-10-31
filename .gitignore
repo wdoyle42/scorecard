@@ -5,7 +5,7 @@
 !/output/README.md
 
 # generally ignore data in repo except institutional file
-/data
+/data/*
 !/data/insts.csv
 !/data/college-24.svg
 !/data/acs_medinc_2012_3yr.csv
