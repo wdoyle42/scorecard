@@ -11,7 +11,7 @@ INIT: 12 September 2015
 
 -->
 
-```{r,echo=F,warning=F,message=F,comment=F}
+```{r,echo=F,warning=F,message=F,comment=F,include=F,results='hide'}
 ################################################################################
 ## SET YEAR, SCORECARD, AND INSTITUTION VARIABLE OPTIONS
 ################################################################################
@@ -46,7 +46,7 @@ instcat <- 5
 ```
 
 
-```{r,echo=F,warning=F,message=F,comment=F}
+```{r,echo=F,warning=F,message=F,comment=F,include=F,results='hide'}
 ################################################################################
 ## HEADER INFORMATION
 ################################################################################
@@ -55,18 +55,18 @@ instcat <- 5
 options(stringsAsFactors = FALSE)
 
 ##  package list
-libs <- c('dplyr',                      # make data wrangling easier
-          'gstat',                      # kriging
-          'geojsonio',                  # to handle geojson data type
-          'htmlwidgets',                # way to bind javascript libraries
-          'knitr',                      # combine R code and markdown
-          'leaflet',                    # interactive mapping module
-          'maptools',                   # mapping projections
-          'RColorBrewer',               # create color palettes
-          'readr',                      # faster reading of large csv files
-          'rgdal',                      # interact with gdal GIS framework
-          'rgeos',                      # interact with geos GIS framework
-          'tidyr')                      # make data wrangling easier
+libs <- c('dplyr',                 # make data wrangling easier
+          'gstat',                 # kriging
+          'geojsonio',             # to handle geojson data type
+          'htmlwidgets',           # way to bind javascript libraries
+          'knitr',                 # combine R code and markdown
+          'leaflet',               # interactive mapping module
+          'maptools',              # mapping projections
+          'RColorBrewer',          # create color palettes
+          'readr',                 # faster reading of large csv files
+          'rgdal',                 # interact with gdal GIS framework
+          'rgeos',                 # interact with geos GIS framework
+          'tidyr')                 # make data wrangling easier
 
 ## load packages
 lapply(libs, require, character.only = T)
@@ -85,13 +85,12 @@ schoolIcon <- makeIcon(iconUrl = paste0(ddir, 'college-24.svg'),
 ```
 
 
-```{r,echo=F,warning=F,message=F,comment=F}
+```{r,echo=F,warning=F,message=F,comment=F,include=F,results='hide'}
 ################################################################################
 ## LOAD DATA
 ################################################################################
 
 ## load county shapefile (national level)
-## shapefile <- paste0('tl_', year, '_us_county')
 shapefile <- paste0('cb_2013_us_county_500k')
 
 ## read in college scorecard data
@@ -106,9 +105,12 @@ csdat <- csdat %>% select(keep)
 ## read in IPEDS institution GEO files
 inst_all <- read_csv(paste0(ddir, 'insts.csv'))
 
+## get ACS
+acs <- read_csv(paste0(ddir, 'acs_medinc_2012_3yr.csv'))
+
 ```
 
-```{r,echo=F,warning=F,message=F,comment=F}
+```{r,echo=FALSE,warning=FALSE,message=FALSE,comment=FALSE}
 ################################################################################
 ## FUNCTIONS
 ################################################################################
@@ -175,10 +177,10 @@ krigeMap <- function(ddir,                          # data directory
     names(county_shape@data) <- tolower(names(county_shape@data))
 
     ## reformat FIPS codes so they have leading zeros
-    dat$fips <- sprintf('%02s', dat$fips)
+    dat$stfips <- sprintf('%02s', dat$stfips)
 
     ## subset to states in scorecard data
-    county_shape <- county_shape[county_shape$statefp %in% dat$fips,] 
+    county_shape <- county_shape[county_shape$statefp %in% dat$stfips,] 
 
     ## =================================
     ## KRIGE OVER AREAS
@@ -210,7 +212,6 @@ krigeMap <- function(ddir,                          # data directory
     ## map data file ./dir/name
     mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson' )
     if(save.file) {
-        ## save(county_shape, file = mapname)
         geojson_write(county_shape, file = mapname)
     }
 
@@ -273,6 +274,11 @@ mapSC <- function(countylayer,          # county map data
                            prettyNum(countylayer@data$outcome_var,
                                      big.mark = ',',
                                      scientific = FALSE,
+                                     digits = 0),
+                           '<br/> County median income: $',
+                           prettyNum(countylayer@data$medinc,
+                                     big.mark = ',',
+                                     scientific = FALSE,
                                      digits = 0)
                            )
     
@@ -281,7 +287,10 @@ mapSC <- function(countylayer,          # county map data
                          prettyNum(instlayer[[outcome_var]],
                                    big.mark = ',',
                                    scientific = FALSE,
-                                   digits = 0)
+                                   digits = 0),
+                         '<br/> Percent of median income: ',
+                         instlayer@data$pctmedinc,
+                         '%'
                          )
     
     ## set bounding box for plotting
@@ -378,44 +387,39 @@ countyMapCS <- function(csdat,               # scorecard data
         filter(group %in% select_group,                # filter out non-group
                !(stabbr %in% dslist)) %>%              # drop non-lower 48
         select(unitid,
+               stfips,
                fips,
                latitude,
                longitud,
-               stabbr) %>% # subset
-        left_join(dat, by = 'unitid')                  # join to cs data
-
+               stabbr) %>%                             # subset
+        left_join(dat, by = 'unitid') %>%              # join to cs data
+        left_join(acs, by = 'fips') %>%                # join to acs data
+        mutate(pctinc = round(outcome_var / medinc * 100, 2)) 
+ 
     ## =================================
     ## READ IN SHAPEFILES
     ## =================================
 
     ## institutions spatial data file ./dir/name
-    ## instname <-paste0(mdir, 'institutional_points.Rda')
     instname <-paste0(mdir, 'institutional_points.geojson')
  
     ## institutional data
     if(file.exists(instname) & !(redraw_inst)){
         ## load existing
-        message('\nReading in institutional points layer')
-        ## inst_sp <- get(load(instname))
-        inst_sp <- readOGR(instname, layer = 'OGRGeoJSON')
+        inst_sp <- readOGR(instname, layer = 'OGRGeoJSON', verbose = FALSE)
     } else {
         ## create institutional spatial dataframe
-        message('\nCreating spatial file for institutional points')
         inst_sp <- instPointsSpatial(mapdat, outcome_var, proj)
     }
     
     ## map data file ./dir/name
-    ## mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.Rda')
     mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson')
     
     if(file.exists(mapname) & !(redraw_map)){
         ## load existing
-        message('\nReading in county layer')
-        ## county_shape <- get(load(mapname))
-        county_shape <- readOGR(mapname, layer = 'OGRGeoJSON')
+        county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
     } else {
         ## create map
-        message('\nKriging...will take a little bit...')
         county_shape <- krigeMap(ddir,mapdat,inst_sp,outcome_var,shapefile,proj)
     }
 
@@ -423,7 +427,6 @@ countyMapCS <- function(csdat,               # scorecard data
     ## DRAW AND RETURN MAP
     ## =================================
 
-    message('\nDrawing map')
     out.map <- mapSC(county_shape, inst_sp, outcome_var, var_describe)
     return(out.map)
 }
@@ -431,7 +434,7 @@ countyMapCS <- function(csdat,               # scorecard data
 
 County Level Estimates: Earnings of Public Two-Year Attendees Ten Years After Entry
 =========================================
-```{r, echo=F,warning=F,comment=F,fig.width=10}
+```{r, echo=FALSE,warning=FALSE,comment=FALSE,fig.width=10}
 ################################################################################
 ## MAKE MAP
 ################################################################################
@@ -440,7 +443,7 @@ county_map_earn <- countyMapCS(csdat = csdat, instdat = inst_all,
                                outcome_var = outcome, select_group = instcat,
                                proj = proj, var_describe = var_describe)
 
-print(county_map_earn)
+county_map_earn
 ```
 
 This map displays county level estimates of the earnings among working attendees of local public two-year colleges ten years after first attendance. The data only include attendees who took some form of federal financial aid (loans or grants).
