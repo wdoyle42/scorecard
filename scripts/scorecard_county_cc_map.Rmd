@@ -1,8 +1,6 @@
 ---
 title: Mapping Earnings Data from College Scorecard
-output:
-  html_document
-  output_dir: ../output
+output: html_document
 ---
 
 <!--
@@ -59,6 +57,7 @@ options(stringsAsFactors = FALSE)
 ##  package list
 libs <- c('dplyr',                      # make data wrangling easier
           'gstat',                      # kriging
+          'geojsonio',                  # to handle geojson data type
           'htmlwidgets',                # way to bind javascript libraries
           'knitr',                      # combine R code and markdown
           'leaflet',                    # interactive mapping module
@@ -79,6 +78,10 @@ mdir <- '../map/'
 ## projection (do not change unless there's a specific reason)
 proj <- CRS('+init=epsg:4269')
 
+## add icon for schools
+schoolIcon <- makeIcon(iconUrl = paste0(ddir, 'college-24.svg'),
+                       iconWidth = 35, iconHeight = 35)
+
 ```
 
 
@@ -88,7 +91,8 @@ proj <- CRS('+init=epsg:4269')
 ################################################################################
 
 ## load county shapefile (national level)
-shapefile <- paste0('tl_', year, '_us_county')
+## shapefile <- paste0('tl_', year, '_us_county')
+shapefile <- paste0('cb_2013_us_county_500k')
 
 ## read in college scorecard data
 csdat <- read_csv(paste0(ddir, 'MERGED', year, '_PP.csv'))
@@ -126,7 +130,6 @@ instPointsSpatial <- function(dat,                  # merged score data
                                       proj4string = proj)
 
     ## save spatial data frame
-    ## filename <- paste0(mdir, 'institutional_points.Rda')
     filename <- paste0(mdir, 'institutional_points.geojson')
     if(save.file) {
         ## save(inst_sp, file = filename)
@@ -164,17 +167,8 @@ krigeMap <- function(ddir,                          # data directory
     county_shape <- readOGR(dsn = ddir,
                             layer = sf,
                             verbose = FALSE)
-
-    ## simplify shapefile to reduce size
-    county_shape_simple <- gSimplify(county_shape,
-                                     tol = .001,
-                                     topologyPreserve = TRUE)
-
-    ## create a spatial polygons dataframe
-    county_shape <- SpatialPolygonsDataFrame(county_shape_simple,
-                                             data = county_shape@data)
-    
-    ## correct Projection: epsg:4269
+  
+    ## correct projection: epsg:4269
     county_shape <- spTransform(county_shape, proj)
 
     ## lower names in attached spatial data
@@ -214,7 +208,6 @@ krigeMap <- function(ddir,                          # data directory
     ## =================================
 
     ## map data file ./dir/name
-    ## mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.Rda' )
     mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson' )
     if(save.file) {
         ## save(county_shape, file = mapname)
@@ -258,25 +251,26 @@ mapSC <- function(countylayer,          # county map data
     ## split long variable description into 2 if long
     split <- as.integer(length(strsplit(var_describe, ' ')[[1]]) / 2)
     if(split > 3) {
-         legend_title <- strsplit(var_describe, ' ')[[1]]
-         legend_title <- paste(paste(legend_title[1:split], collapse = ' '),
-                               '<br/>',
-                               paste(legend_title[split:length(legend_title)],
-                                     collapse = ' '), collapse = '')
+        lo <- split; hi <- split + 1
+        legend_title <- strsplit(var_describe, ' ')[[1]]
+        legend_title <- paste(paste(legend_title[1:lo], collapse = ' '),
+                              '<br/>',
+                              paste(legend_title[hi:length(legend_title)],
+                                    collapse = ' '), collapse = '')
     } else {
         legend_title <- var_describe
     }
 
     ## add break and colon to variable description for popup
-    var_describe <- paste0('<br/> ', var_describe, ': ')
+    var_describe <- paste0('<br/>', var_describe, ': $')
      
     ## =================================
     ## CREATE POPUPS
     ## =================================
        
-    county_popup <- paste0(countylayer@data$namelsad,
+    county_popup <- paste0(paste0(countylayer@data$name, ' County'),
                            var_describe, 
-                           prettyNum(countylayer@data[[outcome_var]],
+                           prettyNum(countylayer@data$outcome_var,
                                      big.mark = ',',
                                      scientific = FALSE,
                                      digits = 0)
@@ -284,7 +278,7 @@ mapSC <- function(countylayer,          # county map data
     
     inst_popup <- paste0(as.character(instlayer@data$instnm),
                          var_describe,
-                         prettyNum(instlayer$[[outcome_var]],
+                         prettyNum(instlayer[[outcome_var]],
                                    big.mark = ',',
                                    scientific = FALSE,
                                    digits = 0)
@@ -309,7 +303,7 @@ mapSC <- function(countylayer,          # county map data
                     opacity = .25,
                     fill = TRUE,
                     color = ~npal(countylayer@data$outcome_var),
-                    fillOpacity = .75,
+                    fillOpacity = .65,
                     popup = county_popup
                     ) %>%
         ## legend
@@ -319,16 +313,12 @@ mapSC <- function(countylayer,          # county map data
                   values = ~countylayer@data$outcome_var
                   ) %>%
         ## overlay instititions
-        addCircleMarkers(lng = instlayer@coords[,1],
-                         lat = instlayer@coords[,2],
-                         color = 'black',
-                         fillColor = 'black',
-                         fillOpacity = .25,
-                         stroke = FALSE,
-                         radius = 5,
-                         group = 'Institutions',
-                         popup = inst_popup
-                         ) %>%  
+        addMarkers(lng = instlayer@coords[,1],
+                   lat = instlayer@coords[,2],
+                   icon = schoolIcon,
+                   pop = inst_popup,
+                   group = 'Institutions',
+                   ) %>%
         ## layer control for institutions
         addLayersControl(
             overlayGroups = c('Institutions'),
@@ -337,7 +327,7 @@ mapSC <- function(countylayer,          # county map data
         ## leave institutions off by default  
         hideGroup('Institutions') %>%
         ## add tiles        
-        addProviderTiles('Stamen.Toner',
+        addProviderTiles('Stamen.TonerLite',
                          options = list(minZoom = 4,
                                         zoom = 4,
                                         maxZoom = 13)
@@ -371,7 +361,9 @@ countyMapCS <- function(csdat,               # scorecard data
     ## ////////////////////////////////////////////////////////////////////
 
     ## convert outcome column to numeric
-    dat <- csdat %>% mutate(outcome_var = as.numeric(.[[outcome_var]]))
+    suppressWarnings(
+        dat <- csdat %>% mutate(outcome_var = as.numeric(.[[outcome_var]]))
+        )
        
     ## if outcome variable expressed as a proportion change to percent
     if(max(dat$outcome_var, na.rm = TRUE) <= 1){
@@ -379,7 +371,7 @@ countyMapCS <- function(csdat,               # scorecard data
     }
 
     ## drop states list
-    dslist <-  c('AK','AS','DC','FM','GU','HI','MP','PR')
+    dslist <-  c('AK','AS','DC','FM','GU','HI','MP','PR','PW')
 
     ## wrangle data
     mapdat <- instdat %>%
