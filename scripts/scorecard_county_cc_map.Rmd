@@ -66,9 +66,11 @@ knitr::opts_chunk$set(echo=FALSE,results='hide',warning=FALSE,message=FALSE)
 ## year option
 year <- 2011
 
+## TODO: Three variables: earnigns of entrants, county earnings, earnings of entrants as a % of county earnings
+
 ## outcome column in addition to required
 outcome <- 'md_earn_wne_p10'
-var_describe <- 'Median earnings'
+var_describe <- 'Median earnings of attendees ten years later'
 
 required <- c('unitid','instnm')
 sccols <- c(required, outcome)
@@ -84,6 +86,8 @@ sccols <- c(required, outcome)
 ## 
 ## -----------------------------------------------------------------------------
 
+
+## TODO: Generalize to ALL Institutions
 ## select category
 instcat <- 5
 
@@ -110,8 +114,11 @@ csdat <- csdat %>% select(keep)
 inst_all <- read_csv(paste0(ddir, 'insts.csv'))
 
 ## get ACS
-acs <- read_csv(paste0(ddir, 'acs_medinc_2012_3yr.csv'))
+acs <- read_csv(paste0(ddir, 'acs_data.csv'))
 
+##county layer
+
+county_layer<-"gz_2010_us_050_00_500k"
 ```
 
 ```{r functions}
@@ -150,6 +157,7 @@ krigeMap <- function(ddir,                          # data directory
                      inst_sp,                       # institution spatial
                      acsdat,                        # acs data
                      outcome_var,                   # variable to krige
+                     select_group,                  # which colleges to use
                      sf,                            # shapefile 
                      proj = CRS('+init=epsg:4269'), # projection to use
                      save.file = TRUE               # option to save result
@@ -167,7 +175,19 @@ krigeMap <- function(ddir,                          # data directory
     ## =================================
 
     ## drop missing observations
-    dat <- dat %>% filter(!is.na(outcome_var))
+    dat <- dat %>% filter(!is.na(outcome_var)) %>%filter(group%in%select_group)
+    
+    ##include only selected institutions
+    
+    inst_sp<-inst_sp[inst_sp@data$group%in%select_group,]
+    
+    ## set outcomevar
+    
+    inst_sp@data$outcome_var<-as.numeric(unlist(inst_sp@data[outcome_var]))
+    
+    ## Only include complete cases
+    
+    inst_sp<-inst_sp[is.na(inst_sp@data$outcome_var)==FALSE,]
     
     ## get appropriate shapefile
     county_shape <- readOGR(dsn = ddir,
@@ -238,12 +258,14 @@ krigeMap <- function(ddir,                          # data directory
     ## merge back into data frame
     county_shape <- spCbind(county_shape, idw.fit.preds)
 
+    county_shape@data$pctvar<-county_shape@data$outcome_var/county_shape@data$medinc
+    
     ## =================================
     ## SAVE AND OUTPUT
     ## =================================
 
     ## map data file ./dir/name
-    mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson' )
+    mapname <- paste0(mdir, 'county_shape_', outcome_var,'_',select_group, '_', year, '.geojson' )
     if(save.file) {
         geojson_write(county_shape, file = mapname)
     }
@@ -252,6 +274,8 @@ krigeMap <- function(ddir,                          # data directory
     return(county_shape)
 }
   
+
+
 mapSC <- function(countylayer,          # county map data
                   instlayer,            # institution points layer
                   outcome_var,          # scorecard outcome data
@@ -262,6 +286,13 @@ mapSC <- function(countylayer,          # county map data
     ## This function produces a leaflet map from the spatial objects
     ## ////////////////////////////////////////////////////////////////////
 
+  ## Take this and make it more complicated: multiple layers to be shown. 
+  
+  ## Drop Alaska and Hawaii
+  
+  countylayer<-countylayer[!countylayer@data$state%in%c("02","03","14","15","43","52","64","72"),]
+  
+  
     ## =================================
     ## SET COLORS
     ## =================================
@@ -312,6 +343,11 @@ mapSC <- function(countylayer,          # county map data
                            prettyNum(countylayer@data$medinc,
                                      big.mark = ',',
                                      scientific = FALSE,
+                                     digits = 0),
+                           '<br/> Attendee income as % of county income: $',
+                           prettyNum(countylayer@data$pctvar,
+                                     big.mark = ',',
+                                     scientific = FALSE,
                                      digits = 0)
                            )
     
@@ -320,12 +356,9 @@ mapSC <- function(countylayer,          # county map data
                          prettyNum(instlayer@data$outcome_var,
                                    big.mark = ',',
                                    scientific = FALSE,
-                                   digits = 0),
-                         '<br/> Percent of median income: ',
-                         instlayer@data$pctinc,
-                         '%'
-                         )
-    
+                                   digits = 0)
+                        )
+                             
     ## set bounding box for plotting
     b <- as.vector(bbox(countylayer))
     
@@ -340,13 +373,32 @@ mapSC <- function(countylayer,          # county map data
     ## =================================
     
     county_map <- leaflet(countylayer) %>%
-        ## overlay counties    
+        ## overlay county median income    
+        addPolygons(stroke = TRUE,
+                    opacity = .25,
+                    fill = TRUE,
+                    color = ~npal(countylayer@data$medinc),
+                    fillOpacity = .65,
+                    popup = county_popup,
+                    group="County Median Income"
+                    ) %>%
+      ## overlay county earnings of attendees    
         addPolygons(stroke = TRUE,
                     opacity = .25,
                     fill = TRUE,
                     color = ~npal(countylayer@data$outcome_var),
                     fillOpacity = .65,
-                    popup = county_popup
+                    popup = county_popup,
+                    group="Income of Attendees"
+                    ) %>%
+        ## overlay pct   
+        addPolygons(stroke = TRUE,
+                    opacity = .25,
+                    fill = TRUE,
+                    color = ~npal(countylayer@data$pctvar),
+                    fillOpacity = .65,
+                    popup = county_popup,
+                    group="Attendee Income as a % of County Income"
                     ) %>%
         ## legend
         addLegend('bottomleft',
@@ -359,15 +411,22 @@ mapSC <- function(countylayer,          # county map data
                    lat = instlayer@coords[,2],
                    icon = schoolIcon,
                    pop = inst_popup,
-                   group = 'Institutions',
+                   group = 'Institutions'
                    ) %>%
         ## layer control for institutions
         addLayersControl(
-            overlayGroups = c('Institutions'),
+            overlayGroups = c('Institutions',
+                              "County Median income",
+                              "Income of Attendees",
+                              "Attendee Income as a % of County Income"
+                              ),
             options = layersControlOptions(collapsed = FALSE)
         ) %>%
         ## leave institutions off by default  
         hideGroup('Institutions') %>%
+        hideGroup("County Median Income") %>%
+        hideGroup( "Attendee Income as a % of County Income")%>%
+      
         ## add tiles        
         addProviderTiles('Stamen.TonerLite',
                          options = list(minZoom = 4,
@@ -385,6 +444,9 @@ mapSC <- function(countylayer,          # county map data
     
     return(county_map)
 }
+
+
+
 
 countyMapCS <- function(csdat,               # scorecard data
                         instdat,             # institutional data
@@ -430,8 +492,9 @@ countyMapCS <- function(csdat,               # scorecard data
                stabbr) %>%                             # subset
         left_join(dat, by = 'unitid') %>%              # join to cs data
         left_join(acs, by = 'fips') %>%                # join to acs data
-        mutate(pctinc = as.integer(round(outcome_var / medinc * 100))) 
- 
+   #     mutate(pctinc = as.integer(round(outcome_var / medinc * 100))) 
+ ##Not what I wanted: wanted county-level, not inst level
+      
     ## =================================
     ## READ IN SHAPEFILES
     ## =================================
@@ -474,9 +537,29 @@ countyMapCS <- function(csdat,               # scorecard data
 ## MAKE MAP
 ################################################################################
 
-county_map_earn <- countyMapCS(csdat = csdat, instdat = inst_all, acsdat = acs,
-                               outcome_var = outcome, select_group = instcat,
-                               proj = proj, var_describe = var_describe)
+inst_dat<-left_join(inst_all,csdat,by="unitid")
+
+inst_sp<-instPointsSpatial(dat=inst_dat,
+                           proj=CRS('+init=epsg:4269'),
+                           save.file=TRUE,
+                           outcome_var=outcome
+                          )
+
+##separate kriged maps for all 5 institution types
+for (i in 1:5){
+  krigeMap(dat=inst_all,
+           inst_sp=inst_sp,
+           acsdat=acs,
+           select_group=i,
+           outcome_var=outcome,
+           sf=county_layer,
+           ddir = "../data/"
+           )
+}
+
+ 
+
+
 ```
 
 <!--
