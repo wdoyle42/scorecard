@@ -33,7 +33,8 @@ libs <- c('dplyr',                 # make data wrangling easier
           'RColorBrewer',          # create color palettes
           'readr',                 # faster reading of large csv files
           'rgdal',                 # interact with gdal GIS framework
-          'rgeos',                 # interact with geos GIS framework
+          'rgeos',                 # interact with geos GIS framework                
+          'scales',                # Nicely formed scales
           'tidyr')                 # make data wrangling easier
 
 ## load packages
@@ -258,7 +259,10 @@ krigeMap <- function(ddir,                          # data directory
     ## merge back into data frame
     county_shape <- spCbind(county_shape, idw.fit.preds)
 
+    county_shape@data$medinc<-as.numeric(county_shape@data$medinc)
+    
     county_shape@data$pctvar<-county_shape@data$outcome_var/county_shape@data$medinc
+    
     
     ## =================================
     ## SAVE AND OUTPUT
@@ -288,7 +292,7 @@ mapSC <- function(countylayer,          # county map data
 
   ## Take this and make it more complicated: multiple layers to be shown. 
   
-  ## Drop Alaska and Hawaii
+  ## Drop Alaska and Hawaii and etc. 
   
   countylayer<-countylayer[!countylayer@data$state%in%c("02","03","14","15","43","52","64","72"),]
   
@@ -304,9 +308,30 @@ mapSC <- function(countylayer,          # county map data
     my.pal <- colorRampPalette(colors = c(my.colors[1],
                                           my.colors[6],
                                           my.colors[11]))(10)
-    ## numeric palette
-    npal <- colorNumeric(pal = my.pal,
-                         domain = countylayer@data$outcome_var)
+    
+    inc_cuts<-base::pretty(x=county_shape@data$outcome_var,n=10)
+    
+    inc_cuts<-c(inc_cuts,100000,150000)
+      
+    pct_cuts<-base::pretty(x=county_shape@data$pctvar,n=10)
+    
+    ## income palette
+    inc_pal <- colorQuantile(pal = my.pal,
+                             county_shape@data$medinc,
+                             n=10
+                                )
+  ## attendee palette
+    attend_pal<-colorQuantile(pal=my.pal,
+                              county_shape@data$outcome_var,
+                              n=10)
+   ## percent palette
+   pct_pal  <- colorQuantile(pal = my.pal,
+                    county_shape@data$pctvar,
+                     n=10)
+    
+    ## TODO: ALL QUANTILES
+                              
+                     
 
 
     ## =================================
@@ -377,7 +402,7 @@ mapSC <- function(countylayer,          # county map data
         addPolygons(stroke = TRUE,
                     opacity = .25,
                     fill = TRUE,
-                    color = ~npal(countylayer@data$medinc),
+                    color = ~inc_pal(countylayer@data$medinc),
                     fillOpacity = .65,
                     popup = county_popup,
                     group="County Median Income"
@@ -386,7 +411,7 @@ mapSC <- function(countylayer,          # county map data
         addPolygons(stroke = TRUE,
                     opacity = .25,
                     fill = TRUE,
-                    color = ~npal(countylayer@data$outcome_var),
+                    color = ~attend_pal(countylayer@data$outcome_var),
                     fillOpacity = .65,
                     popup = county_popup,
                     group="Income of Attendees"
@@ -395,16 +420,16 @@ mapSC <- function(countylayer,          # county map data
         addPolygons(stroke = TRUE,
                     opacity = .25,
                     fill = TRUE,
-                    color = ~npal(countylayer@data$pctvar),
+                    color = ~pct_pal(countylayer@data$pctvar),
                     fillOpacity = .65,
                     popup = county_popup,
                     group="Attendee Income as a % of County Income"
                     ) %>%
         ## legend
         addLegend('bottomleft',
-                  pal = npal,
-                  title = legend_title,
-                  values = ~countylayer@data$outcome_var
+                  pal = attend_pal,
+                  title = "Percentiles",
+                  values=countylayer@data$outcome_var
                   ) %>%
         ## overlay instititions
         addMarkers(lng = instlayer@coords[,1],
@@ -416,7 +441,7 @@ mapSC <- function(countylayer,          # county map data
         ## layer control for institutions
         addLayersControl(
             overlayGroups = c('Institutions',
-                              "County Median income",
+                              "County Median Income",
                               "Income of Attendees",
                               "Attendee Income as a % of County Income"
                               ),
@@ -432,7 +457,7 @@ mapSC <- function(countylayer,          # county map data
                          options = list(minZoom = 4,
                                         zoom = 4,
                                         maxZoom = 13)
-                         ) %>%
+                                                  ) %>%
         ## set boundaries
         setMaxBounds(lng1 = b[1],
                      lat1 = b[2],
@@ -537,17 +562,20 @@ countyMapCS <- function(csdat,               # scorecard data
 ## MAKE MAP
 ################################################################################
 
+## Merge IPEDS data with CS data
 inst_dat<-left_join(inst_all,csdat,by="unitid")
 
+## Spatial projection of institutions
 inst_sp<-instPointsSpatial(dat=inst_dat,
                            proj=CRS('+init=epsg:4269'),
                            save.file=TRUE,
                            outcome_var=outcome
                           )
 
+
 ##separate kriged maps for all 5 institution types
 for (i in 1:5){
-  krigeMap(dat=inst_all,
+  krigeMap(dat=inst_dat,
            inst_sp=inst_sp,
            acsdat=acs,
            select_group=i,
@@ -557,8 +585,13 @@ for (i in 1:5){
            )
 }
 
- 
+## Now generate maps for each
 
+mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', i,"_",year, '.geojson')
+     
+county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
+
+county_shape@data$pctvar<-county_shape@data$outcome_var/as.numeric(county_shape@data$medinc)
 
 ```
 
