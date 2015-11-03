@@ -1,9 +1,19 @@
+##------------------------------------------------------
+## Make data for County level median income
+## Will Doyle and Ben Skinner
+## 10/30/2015
+## Grab ACS Data and put it into a CSV file for use
+## in map application
+##-------------------------------------------------------
 
 library(acs)
+library(dplyr)
+library(readr)
 
 acs_tab_name <- 'B22008'
 
-acskey <- 'b27a265fe0dc7c49bd9281d6bc778637f10685e3'
+acskey <- '<enter your key here>'
+
 ## ------------------------------------------------------
 ## get ACS data for state
 ## ------------------------------------------------------
@@ -54,6 +64,7 @@ acs_fips <- paste0(acstabgeo$state, acstabgeo$county)
 
 ## make data frame; name columns 
 acs_data <- data.frame(acs_geoid,acstabgeo$state,acstabgeo$county, acs_value)
-names(acs_data) <- c("fips","state","county",'income')
+names(acs_data) <- c("fips","state","county",'medinc')
 
+## Write output
 write_csv(acs_data,path="../data/acs_data.csv")

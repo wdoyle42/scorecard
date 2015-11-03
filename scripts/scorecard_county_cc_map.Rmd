@@ -88,10 +88,6 @@ sccols <- c(required, outcome)
 ## -----------------------------------------------------------------------------
 
 
-## TODO: Generalize to ALL Institutions
-## select category
-instcat <- 5
-
 ```
 
 ```{r data}
@@ -116,6 +112,13 @@ inst_all <- read_csv(paste0(ddir, 'insts.csv'))
 
 ## get ACS
 acs <- read_csv(paste0(ddir, 'acs_data.csv'))
+
+## State fips 
+state_fips<-read.csv(paste0(ddir,'state_fips.csv'))
+
+names(state_fips)<-c("stfips","longname","stabbr")
+
+state_fips$stfips<-sprintf("%02d",state_fips$stfips)
 
 ##county layer
 
@@ -159,6 +162,7 @@ krigeMap <- function(ddir,                          # data directory
                      acsdat,                        # acs data
                      outcome_var,                   # variable to krige
                      select_group,                  # which colleges to use
+                     groupname,                     # text group name for file
                      sf,                            # shapefile 
                      proj = CRS('+init=epsg:4269'), # projection to use
                      save.file = TRUE               # option to save result
@@ -230,8 +234,8 @@ krigeMap <- function(ddir,                          # data directory
     ## reformat FIPS codes so they have leading zeros
     dat$stfips <- sprintf('%02s', dat$stfips)
 
-    ## subset to states in scorecard data
-    county_shape <- county_shape[county_shape@data$state %in% dat$stfips,]
+    ## subset to 50 states
+    county_shape <- county_shape[county_shape@data$state %in% state_fips$stfips,]
 
     ## recorrect projection: epsg:4269
     county_shape <- spTransform(county_shape, proj)
@@ -259,17 +263,21 @@ krigeMap <- function(ddir,                          # data directory
     ## merge back into data frame
     county_shape <- spCbind(county_shape, idw.fit.preds)
 
+    ## Miscellaneous cleanup and transformations
     county_shape@data$medinc<-as.numeric(county_shape@data$medinc)
     
     county_shape@data$pctvar<-county_shape@data$outcome_var/county_shape@data$medinc
     
+    ## state names 
+    county_shape@data$stfips<-sprintf("%02s",county_shape@data$state)
+    county_shape@data<-left_join(county_shape@data,state_fips,by="stfips")
     
     ## =================================
     ## SAVE AND OUTPUT
     ## =================================
 
     ## map data file ./dir/name
-    mapname <- paste0(mdir, 'county_shape_', outcome_var,'_',select_group, '_', year, '.geojson' )
+    mapname <- paste0(mdir, 'county_shape_', outcome_var,'_',groupname, '_', year, '.geojson' )
     if(save.file) {
         geojson_write(county_shape, file = mapname)
     }
@@ -282,20 +290,22 @@ krigeMap <- function(ddir,                          # data directory
 
 mapSC <- function(countylayer,          # county map data
                   instlayer,            # institution points layer
-                  outcome_var,          # scorecard outcome data
-                  var_describe          # description for map
+                  var_describe,         # description for map
+                  outcome_var           # outcome variable in text
                   ) {
 
     ## ////////////////////////////////////////////////////////////////////
     ## This function produces a leaflet map from the spatial objects
     ## ////////////////////////////////////////////////////////////////////
 
-  ## Take this and make it more complicated: multiple layers to be shown. 
   
   ## Drop Alaska and Hawaii and etc. 
   
   countylayer<-countylayer[!countylayer@data$state%in%c("02","03","14","15","43","52","64","72"),]
   
+  ## Pull right variable from instlayer
+  
+  instlayer@data$outcome_var<-as.numeric(unlist(instlayer@data[outcome_var]))
   
     ## =================================
     ## SET COLORS
@@ -308,12 +318,6 @@ mapSC <- function(countylayer,          # county map data
     my.pal <- colorRampPalette(colors = c(my.colors[1],
                                           my.colors[6],
                                           my.colors[11]))(10)
-    
-    inc_cuts<-base::pretty(x=county_shape@data$outcome_var,n=10)
-    
-    inc_cuts<-c(inc_cuts,100000,150000)
-      
-    pct_cuts<-base::pretty(x=county_shape@data$pctvar,n=10)
     
     ## income palette
     inc_pal <- colorQuantile(pal = my.pal,
@@ -329,9 +333,6 @@ mapSC <- function(countylayer,          # county map data
                     county_shape@data$pctvar,
                      n=10)
     
-    ## TODO: ALL QUANTILES
-                              
-                     
 
 
     ## =================================
@@ -358,7 +359,8 @@ mapSC <- function(countylayer,          # county map data
     ## CREATE POPUPS
     ## =================================
        
-    county_popup <- paste0(paste0(countylayer@data$name, ' County'),
+    county_popup <- paste0(paste0(countylayer@data$name, ' County, '),
+                           countylayer@data$stabbr,
                            var_describe, 
                            prettyNum(countylayer@data$outcome_var,
                                      big.mark = ',',
@@ -369,14 +371,12 @@ mapSC <- function(countylayer,          # county map data
                                      big.mark = ',',
                                      scientific = FALSE,
                                      digits = 0),
-                           '<br/> Attendee income as % of county income: $',
-                           prettyNum(countylayer@data$pctvar,
-                                     big.mark = ',',
-                                     scientific = FALSE,
-                                     digits = 0)
+                           '<br/> Attendee income as % of county income: ',
+                           percent(countylayer@data$pctvar)
                            )
     
-    inst_popup <- paste0(as.character(instlayer@data$instnm),
+    inst_popup <- paste0(as.character(instlayer@data$instnm.x),
+                         ## so kludgey it makes my eyeballs bleed
                          var_describe,
                          prettyNum(instlayer@data$outcome_var,
                                    big.mark = ',',
@@ -472,89 +472,89 @@ mapSC <- function(countylayer,          # county map data
 
 
 
-
-countyMapCS <- function(csdat,               # scorecard data
-                        instdat,             # institutional data
-                        acsdat,              # ACS data
-                        outcome_var,         # scorecard outcome variable
-                        select_group,        # institutional category
-                        proj,                # projection to use
-                        redraw_map = FALSE,  # ignore saved kriged map
-                        redraw_inst = FALSE, # ignore saved inst. spatial df
-                        ...                  # additional arguments
-                        ){
-
-    ## ////////////////////////////////////////////////////////////////////
-    ## This function is a wrapper for the kriging and mapping functions.
-    ## It expects that you have college scorecard data, 
-    ## institutional data, shapefile data in the ../data/ directory
-    ## ////////////////////////////////////////////////////////////////////
-
-    ## convert outcome column to integer and drop old character version
-    suppressWarnings(
-        dat <- csdat %>%
-            mutate(outcome_var = as.integer(.[[outcome_var]])) %>%
-            select_(.dots = c(required, 'outcome_var'))
-        )
-       
-    ## if outcome variable expressed as a proportion change to percent
-    if(max(dat$outcome_var, na.rm = TRUE) <= 1){
-        dat$outcome_var <- dat$outcome_var * 100
-    }
-
-    ## drop states list
-    dslist <-  c('AK','AS','DC','FM','GU','HI','MP','PR','PW')
-
-    ## wrangle data
-    mapdat <- instdat %>%
-        filter(group %in% select_group,                # filter out non-group
-               !(stabbr %in% dslist)) %>%              # drop non-lower 48
-        select(unitid,
-               stfips,
-               fips,
-               latitude,
-               longitud,
-               stabbr) %>%                             # subset
-        left_join(dat, by = 'unitid') %>%              # join to cs data
-        left_join(acs, by = 'fips') %>%                # join to acs data
-   #     mutate(pctinc = as.integer(round(outcome_var / medinc * 100))) 
- ##Not what I wanted: wanted county-level, not inst level
-      
-    ## =================================
-    ## READ IN SHAPEFILES
-    ## =================================
-
-    ## institutions spatial data file ./dir/name
-    instname <-paste0(mdir, 'institutional_points.geojson')
- 
-    ## institutional data
-    if(file.exists(instname) & !(redraw_inst)){
-        ## load existing
-        inst_sp <- readOGR(instname, layer = 'OGRGeoJSON', verbose = FALSE)
-    } else {
-        ## create institutional spatial dataframe
-        inst_sp <- instPointsSpatial(mapdat, outcome_var, proj)
-    }
-    
-    ## map data file ./dir/name
-    mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson')
-    
-    if(file.exists(mapname) & !(redraw_map)){
-        ## load existing
-        county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
-    } else {
-        ## create map
-        county_shape <- krigeMap(ddir, mapdat, inst_sp, acsdat,
-                                 outcome_var, shapefile, proj)
-    }
-
-    ## =================================
-    ## DRAW AND RETURN MAP
-    ## =================================
-
-    out.map <- mapSC(county_shape, inst_sp, outcome_var, var_describe)
-    return(out.map)
-}
+# 
+# countyMapCS <- function(csdat,               # scorecard data
+#                         instdat,             # institutional data
+#                         acsdat,              # ACS data
+#                         outcome_var,         # scorecard outcome variable
+#                         select_group,        # institutional category
+#                         proj,                # projection to use
+#                         redraw_map = FALSE,  # ignore saved kriged map
+#                         redraw_inst = FALSE, # ignore saved inst. spatial df
+#                         ...                  # additional arguments
+#                         ){
+# 
+#     ## ////////////////////////////////////////////////////////////////////
+#     ## This function is a wrapper for the kriging and mapping functions.
+#     ## It expects that you have college scorecard data, 
+#     ## institutional data, shapefile data in the ../data/ directory
+#     ## ////////////////////////////////////////////////////////////////////
+# 
+#     ## convert outcome column to integer and drop old character version
+#     suppressWarnings(
+#         dat <- csdat %>%
+#             mutate(outcome_var = as.integer(.[[outcome_var]])) %>%
+#             select_(.dots = c(required, 'outcome_var'))
+#         )
+#        
+#     ## if outcome variable expressed as a proportion change to percent
+#     if(max(dat$outcome_var, na.rm = TRUE) <= 1){
+#         dat$outcome_var <- dat$outcome_var * 100
+#     }
+# 
+#     ## drop states list
+#     dslist <-  c('AK','AS','DC','FM','GU','HI','MP','PR','PW')
+# 
+#     ## wrangle data
+#     mapdat <- instdat %>%
+#         filter(group %in% select_group,                # filter out non-group
+#                !(stabbr %in% dslist)) %>%              # drop non-lower 48
+#         select(unitid,
+#                stfips,
+#                fips,
+#                latitude,
+#                longitud,
+#                stabbr) %>%                             # subset
+#         left_join(dat, by = 'unitid') %>%              # join to cs data
+#         left_join(acs, by = 'fips') %>%                # join to acs data
+#    #     mutate(pctinc = as.integer(round(outcome_var / medinc * 100))) 
+#  ##Not what I wanted: wanted county-level, not inst level
+#       
+#     ## =================================
+#     ## READ IN SHAPEFILES
+#     ## =================================
+# 
+#     ## institutions spatial data file ./dir/name
+#     instname <-paste0(mdir, 'institutional_points.geojson')
+#  
+#     ## institutional data
+#     if(file.exists(instname) & !(redraw_inst)){
+#         ## load existing
+#         inst_sp <- readOGR(instname, layer = 'OGRGeoJSON', verbose = FALSE)
+#     } else {
+#         ## create institutional spatial dataframe
+#         inst_sp <- instPointsSpatial(mapdat, outcome_var, proj)
+#     }
+#     
+#     ## map data file ./dir/name
+#     mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', year, '.geojson')
+#     
+#     if(file.exists(mapname) & !(redraw_map)){
+#         ## load existing
+#         county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
+#     } else {
+#         ## create map
+#         county_shape <- krigeMap(ddir, mapdat, inst_sp, acsdat,
+#                                  outcome_var, shapefile, proj)
+#     }
+# 
+#     ## =================================
+#     ## DRAW AND RETURN MAP
+#     ## =================================
+# 
+#     out.map <- mapSC(county_shape, inst_sp, outcome_var, var_describe)
+#     return(out.map)
+# }
 ```
 
 ```{r makemap}
@@ -572,26 +572,107 @@ inst_sp<-instPointsSpatial(dat=inst_dat,
                            outcome_var=outcome
                           )
 
+## Todo: groups should be (1 and 2), (3 and 4) and 5 
+##separate kriged maps for different institution types
 
-##separate kriged maps for all 5 institution types
-for (i in 1:5){
+
+
+#Public 2 year
   krigeMap(dat=inst_dat,
            inst_sp=inst_sp,
            acsdat=acs,
-           select_group=i,
+           select_group=5,
+           groupname="pub2",
            outcome_var=outcome,
            sf=county_layer,
            ddir = "../data/"
            )
-}
+
+
+#Public 4 year
+  krigeMap(dat=inst_dat,
+           inst_sp=inst_sp,
+           acsdat=acs,
+           select_group=c(1,2),
+           groupname="pub4",
+           outcome_var=outcome,
+           sf=county_layer,
+           ddir = "../data/"
+           )
+
+#Private 4 year
+  krigeMap(dat=inst_dat,
+           inst_sp=inst_sp,
+           acsdat=acs,
+           select_group=c(3,4),
+           groupname="priv4",
+           outcome_var=outcome,
+           sf=county_layer,
+           ddir = "../data/"
+           )
+
+  
+  
+## REPORT CATEGORIES -----------------------------------------------------------
+##
+## 1 = Public Doctoral (includes extensive and intensive) 4-year
+## 2 = Public Non-Doctoral (all other 4-years)
+## 3 = Private Doctoral (as above)
+## 4 = Private Non-Doctoral (as above)
+## 5 = Public 2 year (>= 90% of degrees at Associate’s or certificate level)
+## 6 = Public Vocational/Technical
+## 
+## -----------------------------------------------------------------------------
+
 
 ## Now generate maps for each
 
-mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', i,"_",year, '.geojson')
+## Publics
+
+groupname="pub4"
+
+outcome_var=outcome
+
+mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', groupname,"_",year, '.geojson')
      
 county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
 
-county_shape@data$pctvar<-county_shape@data$outcome_var/as.numeric(county_shape@data$medinc)
+## Public four year map
+pub4_map<-mapSC(countylayer=county_shape,
+      instlayer=inst_sp[inst_sp@data$group %in% c(1,2),],
+      var_describe=var_describe,
+      outcome_var=outcome)
+
+
+## 5 = Public 2 year (>= 90% of degrees at Associate’s or certificate level)
+
+groupname="pub2"
+
+mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', groupname,"_",year, '.geojson')
+     
+county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
+
+pub2_map<-mapSC(countylayer=county_shape,
+                instlayer=inst_sp[inst_sp@data$group==5,],
+                var_describe=var_describe,
+                outcome_var=outcome)
+
+
+
+## 5 = Public 2 year (>= 90% of degrees at Associate’s or certificate level)
+
+groupname="pub2"
+
+mapname <- paste0(mdir, 'county_shape_', outcome_var, '_', groupname,"_",year, '.geojson')
+     
+county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
+
+priv4_map<-mapSC(countylayer=county_shape,
+                instlayer=inst_sp[inst_sp@data$group %in% c(3,4),],
+                var_describe=var_describe,
+                outcome_var=outcome)
+
+
 
 ```
 
@@ -616,7 +697,7 @@ institution.
 ## PRINT MAP
 ################################################################################
 
-county_map_earn
+pub2_map
 ```
 
 ## Notes
