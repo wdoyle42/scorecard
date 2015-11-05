@@ -2,15 +2,17 @@
 
 This project visualizes the data from the college report card, [https://collegescorecard.ed.gov/data/](https://collegescorecard.ed.gov/data/), using R.
 
-## To create HTML page from rmarkdown script
+## To create HTML page using RStudio
+
+You can simply run `scorecard_county_map.Rmd` in RStudio using the `Knit HTML` button at the top of the screen.
+
+## To create HTML page using R and `rmarkdown`
 
 To create the HTML file from the primary script file, open an R session in the `./scripts` directory and use
 
 ```r,
-rmarkdown::render('scorecard_county_cc_map.Rmd', output_dir = '../html/')
+rmarkdown::render('scorecard_county_map.Rmd')
 ```
-
-The final option isn't strictly required, but it will place the output file into the `./html` directory rather than the `./scripts` directory.
 
 ## Required data
 
@@ -39,6 +41,6 @@ libs <- c('dplyr',                 # make data wrangling easier
           'tidyr')                 # make data wrangling easier
 ```
 
-[`rmarkdown`](https://github.com/rstudio/rmarkdown) is also required to produce the final HTML file.  
+[`rmarkdown`](https://github.com/rstudio/rmarkdown) is also required to produce the final HTML file if you choose not to use RStudio.  
 
 Note that the geospatial packages (e.g., `rgdal` and `rgeos`) may require the installation of geospatial libraries on your local machine. For OS X, many can be installed using prepackaged binaries [found here](http://www.kyngchaos.com/software/frameworks).
