@@ -4,4 +4,5 @@
 /data/*
 !/data/insts.csv
 !/data/college-24.svg
-!/data/acs_medinc_2012_3yr.csv
+!/data/acs_data.csv
+!/data/state_fips.csv
