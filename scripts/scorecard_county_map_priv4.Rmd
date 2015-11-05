@@ -1,0 +1,264 @@
+---
+title: Mapping Earnings Data from College Scorecard
+author: Will Doyle and Benjamin Skinner
+output:
+  html_document:
+    theme: cosmo
+---
+
+<!--
+
+PROJ: Analyzing new college score card data
+AUTH: Will Doyle and Benjamin Skinner
+INIT: 12 September 2015
+
+-->
+
+```{r header, warning = FALSE, message = FALSE, include = FALSE}
+################################################################################
+## HEADER INFORMATION
+################################################################################
+
+## read in strings as strings, not factors
+options(stringsAsFactors = FALSE)
+
+##  package list
+libs <- c('dplyr',                 # make data wrangling easier
+          'gstat',                 # kriging
+          'geojsonio',             # to handle geojson data type
+          'htmlwidgets',           # way to bind javascript libraries
+          'knitr',                 # combine R code and markdown
+          'leaflet',               # interactive mapping module
+          'maptools',              # mapping projections
+          'RColorBrewer',          # create color palettes
+          'readr',                 # faster reading of large csv files
+          'rgdal',                 # interact with gdal GIS framework
+          'rgeos',                 # interact with geos GIS framework               
+          'scales',                # Nicely formed scales
+          'tidyr')                 # make data wrangling easier
+
+## load packages
+lapply(libs, require, character.only = T)
+
+## set relative directory paths
+ddir <- '../data/'
+mdir <- '../map/'
+
+## projection (do not change unless there's a specific reason)
+proj <- CRS('+init=epsg:4269')
+
+## add icon for schools
+schoolIcon <- makeIcon(iconUrl = paste0(ddir, 'college-24.svg'),
+                       iconWidth = 35, iconHeight = 35)
+
+## set knitr global chunk options
+knitr::opts_chunk$set(echo=FALSE,results='hide',warning=FALSE,message=FALSE)
+
+```
+
+```{r externalfunctions}
+################################################################################
+## READ IN FUNCTIONS FROM EXTERNAL SCRIPT FILE
+################################################################################
+source('functions.R')
+```
+
+```{r options}
+################################################################################
+## SET YEAR, SCORECARD, AND INSTITUTION VARIABLE OPTIONS
+################################################################################
+
+## Set the year for your map. You must have all relevelant files for
+## the program to run
+
+## year option (choose any year as long as it's 2011)
+year <- 2011
+
+## /\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+## TODO: Three variables: earnigns of entrants,
+## county earnings, earnings of entrants as a % of county earnings
+## /\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/\/
+
+## outcome column in addition to required
+outcome <- 'md_earn_wne_p10'
+var_describe <- 'Median earnings of attendees ten years later'
+
+required <- c('unitid','instnm')
+sccols <- c(required, outcome)
+
+```
+
+```{r data}
+################################################################################
+## LOAD DATA
+################################################################################
+
+## load county shapefile (national level)
+shapefile <- 'gz_2010_us_050_00_500k'
+
+## read in college scorecard data
+csdat <- read_csv(paste0(ddir, 'MERGED', year, '_PP.csv'), progress = FALSE)
+
+## set mask based on columns set above
+keep <- sapply(sccols, FUN = function(x) { grep(x, tolower(names(csdat))) })
+
+## subset
+csdat <- csdat %>% select(keep)
+
+## read in IPEDS institution GEO files
+inst_all <- read_csv(paste0(ddir, 'insts.csv'))
+
+## get ACS
+acs <- read_csv(paste0(ddir, 'acs_data.csv'))
+
+## get state fips; change names; add leading zeros; drop AK and HI
+state_fips <- read_csv(paste0(ddir,'state_fips.csv'))
+names(state_fips) <- c('stfips','longname','stabbr')
+stfipsvec <- state_fips %>% filter(!stfips %in% c('02','15')) %>% .$stfips
+
+## county layer (same as shapefile name above
+county_layer <- shapefile
+```
+
+```{r krige}
+################################################################################
+## MAKE MAP
+################################################################################
+
+## merge IPEDS data with CS data
+inst_dat <- left_join(inst_all, csdat, by = 'unitid')
+
+## spatial projection of institutions
+inst_sp <- instPointsSpatial(dat = inst_dat,
+                             proj = proj,
+                             outcome_var = outcome
+                             )
+
+## REPORT CATEGORIES -----------------------------------------------------------
+##
+## 1 = Public Doctoral (includes extensive and intensive) 4-year
+## 2 = Public Non-Doctoral (all other 4-years)
+## 3 = Private Doctoral (as above)
+## 4 = Private Non-Doctoral (as above)
+## 5 = Public 2 year (>= 90% of degrees at Associate’s or certificate level)
+## 6 = Public Vocational/Technical
+## 
+## -----------------------------------------------------------------------------
+
+## institutional types with report cateogories
+insttypes <- list(list('priv4',c(3,4)))   # private four-years, grour = 3,4
+
+## loop through each type to create layer if not already created
+for(i in 1:length(insttypes)) {
+
+    ## NB: if file already exists, don't run; delete or move files to rerun
+    if (!file.exists(paste0(mdir,'county_shape_', outcome, '_',
+                            insttypes[[i]][[1]], '_', year, '.geojson'))) {
+
+        ## krige if doesn't exist (will take a while)...
+        krigeMap(dat = inst_dat,
+                 inst_sp = inst_sp,
+                 acsdat = acs,
+                 select_group = insttypes[[i]][[2]],
+                 groupname = insttypes[[i]][[1]],
+                 outcome_var = outcome,
+                 sf = county_layer,
+                 stfipsvec = stfipsvec,
+                 ddir = ddir)
+        
+    } else {
+        ## ...else move to the next institutional type
+        message(paste0(insttypes[[i]][[1]],' file exists, no new estimation\n'))
+        next
+    }
+}
+
+```
+
+```{r drawmap}
+################################################################################
+## GENERATE MAPS
+################################################################################
+
+## =================================
+## PRIVATE FOUR-YEAR MAP
+## =================================
+
+## read in spatial layer
+mapname <- paste0(mdir, 'county_shape_', outcome, '_priv4_', year, '.geojson')  
+county_shape <- readOGR(mapname, layer = 'OGRGeoJSON', verbose = FALSE)
+
+## create map
+priv4_map <- mapSC(countylayer = county_shape,
+                   instlayer = inst_sp[inst_sp@data$group==c(3,4),],
+                   var_describe = var_describe,
+                   outcome_var = outcome)
+
+```
+
+<!--
+
+HTML page content
+
+-->
+
+The map below displays county level estimates of the earnings among working
+attendees of local public two-year colleges ten years after first
+attendance. The map is interactive: click on any county for county-level
+estimate. Zoom using "+/-" in upper left corner. Pan using mouse or
+keyboard arrows. Check "institutions" box to see institutional
+location. Click on institutions to see scorecard data for that
+institution.
+
+## County Level Estimates: Earnings of Private Four-Year Students Ten Years After Entry
+```{r printmap_priv4, results = 'show', fig.width = 9.5}
+################################################################################
+## PRINT MAP
+################################################################################
+
+priv4_map
+```
+
+## Notes
+
+The data only include attendees who took some form of federal
+financial aid (loans or grants). County-level estimates are based on
+the distance-weighted measures for nearby institutions, with nearest
+institutions weighted highest. 
+
+## Data
+
+### Median income 10 years after first enrollment
+
+The primary income data come from college scorecard dataset:
+[https://collegescorecard.ed.gov/data/](https://collegescorecard.ed.gov/data/).
+The variable used is **`r outcome`**. Data are from the year 2011.
+
+### County median income
+
+Median income data come from the American Community Survey 5-year
+rolling estimates. The table id is **B22008**. The years surrounding
+2011 were used (2008-2012). Data from the table are in the GitHub
+respository, but the full table can be
+[downloaded here](http://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_12_3YR_S1903&prodType=table).
+
+### Spatial polygons
+
+Spatial shapefiles were taken from the [U.S. Census Bureau Cartographic
+Boundary Shapefiles](https://www.census.gov/geo/maps-data/data/cbf/cbf_counties.html).
+Specifically, the 500k resolution files were used. These contain fewer
+details than finer featured TIGER shapefiles, but are much smaller and
+are adequate for this map.
+
+## Download, fork, or collaborate
+
+The GitHub repository for this project may be found at
+[https://github.com/wdoyle42/scorecard](https://github.com/wdoyle42/scorecard).
+
+This is an ongoing project. Comments welcome, better code even more so.
+
+## Authors
+
+Will Doyle: [Website](https://my.vanderbilt.edu/willdoyle/),
+[GitHub](https://github.com/wdoyle42)  
+Benjamin Skinner: [Website](http://btskinner.me/), [GitHub](https://github.com/btskinner)
