@@ -168,10 +168,10 @@ krigeMap <- function(ddir,                          # data directory
     ## =================================
 
     ## drop missing observations
-    dat <- dat %>% filter(!is.na(outcome_var)) %>%filter(group%in%select_group)
+    dat <- dat %>% filter(!is.na(outcome_var), group %in% select_group)
     
     ## include only selected institutions
-    inst_sp <- inst_sp[inst_sp@data$group%in%select_group,]
+    inst_sp <- inst_sp[inst_sp@data$group %in% select_group,]
     
     ## set outcomevar
     inst_sp@data$outcome_var <- as.numeric(unlist(inst_sp@data[outcome_var]))
@@ -190,6 +190,9 @@ krigeMap <- function(ddir,                          # data directory
     ## drop unnecessary geographic variables to reduce file size
     cols <- c('state','county','name')
     county_shape@data <- county_shape@data[,cols]
+    
+    ## subset to 50 states
+    county_shape <- county_shape[county_shape@data$state %in% state_fips$stfips,]
 
     ## create fips from state and county (assumes they are characters)
     county_shape@data$fips <- paste0(county_shape@data$state,
@@ -201,8 +204,10 @@ krigeMap <- function(ddir,                          # data directory
                                     acsdat[match(county_shape@data$fips,
                                                  acsdat$fips),])
 
-    ## drop redundant column
+    ## drop redundant columns
     county_shape@data$fips.1 <- NULL
+    county_shape@data$state.1 <- NULL
+    county_shape@data$county.1 <- NULL
   
     ## correct projection: epsg:4269
     county_shape <- spTransform(county_shape, proj)
@@ -215,9 +220,6 @@ krigeMap <- function(ddir,                          # data directory
 
     ## reformat FIPS codes so they have leading zeros
     dat$stfips <- sprintf('%02s', dat$stfips)
-
-    ## subset to 50 states
-    county_shape <- county_shape[county_shape@data$state %in% state_fips$stfips,]
 
     ## recorrect projection: epsg:4269
     county_shape <- spTransform(county_shape, proj)
@@ -261,8 +263,8 @@ krigeMap <- function(ddir,                          # data directory
         county_shape@data$medinc
     
     ## state names 
-    county_shape@data$stfips<-sprintf("%02s",county_shape@data$state)
-    county_shape@data<-left_join(county_shape@data,state_fips,by="stfips")
+    county_shape@data$stfips <- sprintf("%02s", county_shape@data$state)
+    county_shape@data <- left_join(county_shape@data, state_fips, by='stfips')
     
     ## =================================
     ## SAVE
